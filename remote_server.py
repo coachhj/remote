@@ -28,7 +28,7 @@ except Exception:  # 중계 기능만 꺼짐
 
 IS_WIN = sys.platform == "win32"
 PORT = 8765
-VERSION = "1.0"
+VERSION = "1.1"
 
 
 # ------------------------------------------------------------------ 경로/설정
@@ -48,8 +48,6 @@ DEFAULT_CONFIG = {
     "port": PORT,
     # 인터넷 중계용 폰 페이지 주소 (remote.html 을 GitHub Pages 등에 올린 주소)
     "relay_page_url": "https://coachhj.github.io/remote/remote.html",
-    "mqtt_host": "broker.emqx.io",
-    "mqtt_wss_port": 8084,
     "mqtt_path": "/mqtt",
     "relay_enabled": True,
     "volume_step": 2,          # 버튼 한 번에 올리거나 내릴 단계(윈도우 기준 1단계 = 2%)
@@ -399,44 +397,96 @@ def accept(cmd):
 
 
 # ------------------------------------------------------------------ 인터넷 중계(MQTT)
-class Relay:
-    def __init__(self):
-        self.status = "꺼짐"
-        self.client = None
-        if not CFG.get("relay_enabled") or mqtt is None:
-            return
-        base = f"hjremote/{CFG['room']}"
-        self.t_cmd, self.t_state = base + "/c", base + "/s"
-        try:
-            cl = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
-                             client_id="hjpc-" + rand_id(8), transport="websockets")
-            cl.ws_set_options(path=CFG["mqtt_path"])
+DEFAULT_BROKERS = ["broker.emqx.io:8084", "broker.hivemq.com:8884", "test.mosquitto.org:8081"]
+
+
+def log(*a):
+    print(time.strftime("[%H:%M:%S]"), *a, flush=True)
+
+
+class BrokerConn:
+    """중계 서버 하나와의 연결"""
+
+    def __init__(self, entry, relay):
+        self.relay = relay
+        self.host, _, port = entry.partition(":")
+        self.port = int(port or 8084)
+        self.name = self.host.split(".")[-2] if self.host.count(".") >= 1 else self.host
+        self.status = "연결 중"
+        cl = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
+                         client_id="hjpc-" + rand_id(8), transport="websockets")
+        cl.ws_set_options(path=CFG.get("mqtt_path", "/mqtt"))
+        if CFG.get("mqtt_tls", True):
             cl.tls_set()
-            cl.reconnect_delay_set(1, 15)
-            cl.on_connect = self._on_connect
-            cl.on_disconnect = self._on_disconnect
-            cl.on_message = self._on_message
-            cl.connect_async(CFG["mqtt_host"], int(CFG["mqtt_wss_port"]), keepalive=30)
-            cl.loop_start()
-            self.client = cl
-            self.status = "연결 중"
-            with WORKER.lock:
-                WORKER.listeners.append(self.publish)
-        except Exception as e:
-            self.status = f"오류: {e}"
+        cl.reconnect_delay_set(2, 30)
+        cl.on_connect = self._on_connect
+        cl.on_disconnect = self._on_disconnect
+        cl.on_message = relay.on_message
+        cl.on_connect_fail = self._on_fail
+        self.client = cl
+        cl.connect_async(self.host, self.port, keepalive=30)
+        cl.loop_start()
+
+    def _set(self, st):
+        if st != self.status:
+            self.status = st
+            log(f"[인터넷 중계] {self.host}:{self.port} → {st}")
 
     def _on_connect(self, cl, userdata, flags, rc, props=None):
         if not rc.is_failure:
-            cl.subscribe(self.t_cmd, qos=0)
-            self.status = "연결됨"
-            WORKER.submit({"c": "state"})
+            cl.subscribe(self.relay.t_cmd, qos=0)
+            self._set("연결됨")
         else:
-            self.status = f"연결 실패({rc})"
+            self._set(f"거부됨({rc})")
 
-    def _on_disconnect(self, *a, **k):
-        self.status = "끊김(재연결 시도 중)"
+    def _on_fail(self, *a, **k):
+        self._set("접속 실패(이 네트워크에서 막혔을 수 있음)")
 
-    def _on_message(self, cl, userdata, m):
+    def _on_disconnect(self, cl, userdata, flags, rc, props=None):
+        self._set("끊김(재시도 중)" if self.status == "연결됨" else "접속 실패(이 네트워크에서 막혔을 수 있음)")
+
+    def publish(self, payload):
+        if self.status == "연결됨":
+            self.client.publish(self.relay.t_state, payload, qos=0)
+
+
+class Relay:
+    def __init__(self):
+        self.conns = []
+        self.enabled = bool(CFG.get("relay_enabled")) and mqtt is not None
+        if not self.enabled:
+            return
+        base = f"hjremote/{CFG['room']}"
+        self.t_cmd, self.t_state = base + "/c", base + "/s"
+        self.last_phone = 0
+        for entry in self.brokers():
+            try:
+                self.conns.append(BrokerConn(entry, self))
+            except Exception as e:
+                log(f"[인터넷 중계] {entry} 준비 실패: {e}")
+        with WORKER.lock:
+            WORKER.listeners.append(self.publish)
+
+    @staticmethod
+    def brokers():
+        b = CFG.get("brokers")
+        if isinstance(b, list) and b:
+            return b
+        return DEFAULT_BROKERS
+
+    @property
+    def status(self):
+        if not self.enabled:
+            return "꺼짐"
+        ok = [c.name for c in self.conns if c.status == "연결됨"]
+        if ok:
+            return "연결됨(" + ", ".join(ok) + ")"
+        return "중계 서버에 접속 못 함 — 노트북 네트워크 확인"
+
+    def detail(self):
+        return [{"host": c.host, "port": c.port, "status": c.status} for c in self.conns]
+
+    def on_message(self, cl, userdata, m):
         try:
             data = json.loads(m.payload.decode("utf-8"))
         except Exception:
@@ -444,14 +494,19 @@ class Relay:
         if data.get("k") != CFG["key"]:
             return
         if data.get("c") == "hello":
-            self.publish({"t": "hello", "v": VERSION})
+            if time.time() - self.last_phone > 60:
+                log("[인터넷 중계] 폰이 연결되었습니다")
+            self.last_phone = time.time()
+            cl.publish(self.t_state, json.dumps({"t": "hello", "v": VERSION}), qos=0)
             WORKER.submit({"c": "state"})
             return
+        self.last_phone = time.time()
         accept(data)
 
     def publish(self, msg):
-        if self.client is not None and self.status == "연결됨":
-            self.client.publish(self.t_state, json.dumps(msg, ensure_ascii=False), qos=0)
+        payload = json.dumps(msg, ensure_ascii=False)
+        for c in self.conns:
+            c.publish(payload)
 
 
 # ------------------------------------------------------------------ 웹 서버
@@ -481,7 +536,7 @@ def local_url(ip):
 
 
 def relay_url():
-    return f"{CFG['relay_page_url']}?r={CFG['room']}&k={CFG['key']}&h={CFG['mqtt_host']}&p={CFG['mqtt_wss_port']}"
+    return f"{CFG['relay_page_url']}?r={CFG['room']}&k={CFG['key']}&b={','.join(Relay.brokers())}"
 
 
 def qr_svg(text):
@@ -511,6 +566,7 @@ async def handle_ws(request):
     with WORKER.lock:
         WORKER.listeners.append(send)
     ws_clients.add(ws)
+    log(f"[같은 와이파이] 폰 연결됨 ({request.remote})")
     await ws.send_json({"t": "hello", "v": VERSION})
     WORKER.submit({"c": "state"})
     try:
@@ -522,6 +578,7 @@ async def handle_ws(request):
                     pass
     finally:
         ws_clients.discard(ws)
+        log(f"[같은 와이파이] 폰 연결 끊김 ({request.remote})")
         with WORKER.lock:
             if send in WORKER.listeners:
                 WORKER.listeners.remove(send)
@@ -542,7 +599,7 @@ async def handle_admin(request):
 async def handle_status(request):
     if not is_local(request):
         return web.Response(status=403)
-    return web.json_response({"phones": len(ws_clients), "relay": RELAY.status, "ips": local_ips()})
+    return web.json_response({"phones": len(ws_clients), "relay": RELAY.status, "detail": RELAY.detail(), "ips": local_ips()})
 
 
 def admin_html():
@@ -550,12 +607,12 @@ def admin_html():
     cards = []
     for ip in ips:
         cards.append(f"""<div class="card"><h3>같은 와이파이로 연결 <small>{ip}</small></h3>{qr_svg(local_url(ip))}
-<p class="url">{local_url(ip)}</p></div>""")
+<p class="url">{local_url(ip)}</p><p class="hint">폰이 이 와이파이에 연결되어 있어야 합니다. 안 열리면 방화벽_허용.bat 을 한 번 실행하세요.</p></div>""")
     if not ips:
         cards.append('<div class="card"><h3>같은 와이파이로 연결</h3><p>네트워크에 연결되어 있지 않습니다.</p></div>')
-    if CFG.get("relay_enabled") and mqtt is not None:
+    if RELAY.enabled:
         cards.append(f"""<div class="card relay"><h3>인터넷 중계로 연결 <small id="rs">{RELAY.status}</small></h3>{qr_svg(relay_url())}
-<p class="url">{relay_url()}</p><p class="hint">폰과 노트북이 서로 다른 네트워크여도 둘 다 인터넷이 되면 됩니다.</p></div>""")
+<p class="url">{relay_url()}</p><p class="hint">폰과 노트북이 서로 다른 네트워크여도 둘 다 인터넷이 되면 됩니다.</p><div id="rd" class="hint"></div></div>""")
     return f"""<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>HJ 리모컨</title>
 <style>
 body{{font-family:'Malgun Gothic',sans-serif;background:#0f1115;color:#e8e8e8;margin:0;padding:24px}}
@@ -573,7 +630,8 @@ h1{{margin:0 0 4px;font-size:22px}} .sub{{color:#9aa;margin:0 0 20px}}
 <div id="st">연결된 폰(같은 와이파이): <b id="n">0</b>대</div>
 <script>
 setInterval(async()=>{{try{{const r=await fetch('/status');const j=await r.json();
-document.getElementById('n').textContent=j.phones;const rs=document.getElementById('rs');if(rs)rs.textContent=j.relay;}}catch(e){{}}}},2000);
+document.getElementById('n').textContent=j.phones;const rs=document.getElementById('rs');if(rs)rs.textContent=j.relay;
+const rd=document.getElementById('rd');if(rd&&j.detail)rd.innerHTML=j.detail.map(d=>`${{d.status==='연결됨'?'🟢':'🔴'}} ${{d.host}}:${{d.port}} — ${{d.status}}`).join('<br>');}}catch(e){{}}}},2000);
 </script></body></html>"""
 
 
@@ -597,7 +655,7 @@ def main():
     print("=" * 56)
     for ip in local_ips():
         print(" 같은 와이파이 :", local_url(ip))
-    if RELAY.client is not None:
+    if RELAY.enabled:
         print(" 인터넷 중계   :", relay_url())
     print(" 노트북 화면에 QR 코드 창이 열립니다. (http://localhost:%d/admin)" % port)
     print(" 끝내려면 이 창을 닫으세요.")

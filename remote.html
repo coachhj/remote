@@ -97,6 +97,8 @@
   function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('show'),1300); }
   function setConn(state, text){ dot.className='dot'+(state==='on'?' on':state==='wait'?' wait':''); connText.textContent=text; }
   function onMessage(m){
+    lastSeen = Date.now();
+    if (m.t !== 'toast' && connText.textContent.indexOf('연결됨') < 0) setConn('on', MODE==='local' ? '연결됨 · 와이파이' : '연결됨 · 인터넷 중계');
     if (m.t === 'state'){
       if (m.show && m.slide){ $('slide').innerHTML = `${m.slide} <small>/ ${m.total||'–'}</small>`; }
       else { $('slide').innerHTML = `<small>슬라이드쇼 대기</small>`; }
@@ -108,7 +110,7 @@
   }
 
   // ---------- 연결: 같은 와이파이(WebSocket)
-  let sendRaw = () => false, lastHello = 0;
+  let sendRaw = () => false, lastHello = 0, lastSeen = 0;
   function startLocal(){
     let ws, retry = 0;
     const open = () => {
@@ -123,27 +125,38 @@
     open();
   }
 
-  // ---------- 연결: 인터넷 중계(MQTT)
+  // ---------- 연결: 인터넷 중계(MQTT) - 여러 중계 서버에 동시에 붙고, 노트북이 먼저 응답한 곳을 사용
   function startRelay(){
     setConn('wait', '중계 서버 연결 중…');
-    const host = qs.get('h') || 'broker.emqx.io', port = qs.get('p') || '8084';
+    let list = (qs.get('b') || '').split(',').filter(Boolean);
+    if (!list.length) list = qs.get('h') ? [qs.get('h') + ':' + (qs.get('p') || '8084')] : ['broker.emqx.io:8084','broker.hivemq.com:8884','test.mosquitto.org:8081'];
     const s = document.createElement('script');
     s.src = 'https://unpkg.com/mqtt@5/dist/mqtt.min.js';
-    s.onerror = () => setConn('off', '중계 스크립트를 못 불러옴 · 인터넷 확인');
+    s.onerror = () => setConn('off', '중계 스크립트를 못 불러옴 · 폰 인터넷 확인');
     s.onload = () => {
       const base = `hjremote/${ROOM}`;
-      const client = mqtt.connect(`wss://${host}:${port}/mqtt`, { clientId: 'hjph-' + Math.random().toString(36).slice(2,10), reconnectPeriod: 1500, keepalive: 30, clean: true });
-      client.on('connect', () => {
-        setConn('wait', '노트북 찾는 중…');
-        client.subscribe(base + '/s');
-        client.publish(base + '/c', JSON.stringify({k: KEY, c: 'hello'}));
+      const hello = JSON.stringify({k: KEY, c: 'hello'});
+      let active = null;
+      const clients = list.map(entry => {
+        const [host, port] = entry.split(':');
+        const c = mqtt.connect(`wss://${host}:${port || 443}/mqtt`, { clientId: 'hjph-' + Math.random().toString(36).slice(2,10), reconnectPeriod: 2000, keepalive: 30, clean: true, connectTimeout: 8000 });
+        c.on('connect', () => { c.subscribe(base + '/s'); c.publish(base + '/c', hello); });
+        c.on('message', (_, payload) => {
+          let m; try{ m = JSON.parse(payload.toString()); }catch(_){ return; }
+          if (!active && m.t === 'hello') active = c;
+          if (c === active) onMessage(m);
+        });
+        c.on('close', () => { if (c === active) active = null; });
+        return c;
       });
-      client.on('message', (_, payload) => { try{ onMessage(JSON.parse(payload.toString())); }catch(_){} });
-      client.on('reconnect', () => setConn('wait', '다시 연결 중…'));
-      client.on('offline', () => setConn('off', '오프라인'));
-      sendRaw = obj => { if (client.connected){ obj.k = KEY; client.publish(base + '/c', JSON.stringify(obj)); return true; } return false; };
-      // 노트북 응답이 없으면 주기적으로 다시 인사
-      setInterval(() => { if (client.connected && Date.now() - lastHello > 8000){ setConn('wait', '노트북 응답 없음 · 프로그램 실행 확인'); client.publish(base + '/c', JSON.stringify({k: KEY, c: 'hello'})); } }, 4000);
+      sendRaw = obj => { if (active && active.connected){ obj.k = KEY; active.publish(base + '/c', JSON.stringify(obj)); return true; } return false; };
+      setInterval(() => {
+        const up = clients.filter(c => c.connected);
+        if (!up.length){ setConn('off', '중계 서버 접속 안 됨 · 폰 인터넷 확인'); return; }
+        if (active && active.connected) active.publish(base + '/c', hello);
+        else { active = null; up.forEach(c => c.publish(base + '/c', hello)); }
+        if (Date.now() - lastSeen > 12000) setConn('wait', '노트북 응답 없음 · 노트북 화면의 중계 상태 확인');
+      }, 4000);
     };
     document.head.appendChild(s);
   }
