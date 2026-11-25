@@ -607,7 +607,7 @@ def admin_html():
     cards = []
     for ip in ips:
         cards.append(f"""<div class="card"><h3>같은 와이파이로 연결 <small>{ip}</small></h3>{qr_svg(local_url(ip))}
-<p class="url">{local_url(ip)}</p><p class="hint">폰이 이 와이파이에 연결되어 있어야 합니다. 안 열리면 방화벽_허용.bat 을 한 번 실행하세요.</p></div>""")
+<p class="url">{local_url(ip)}</p><p class="hint">폰이 이 와이파이에 연결되어 있어야 합니다. 안 열리면 firewall_allow.bat 을 한 번 실행하세요.</p></div>""")
     if not ips:
         cards.append('<div class="card"><h3>같은 와이파이로 연결</h3><p>네트워크에 연결되어 있지 않습니다.</p></div>')
     if RELAY.enabled:

@@ -14,5 +14,5 @@ jobs:
           name: HJ_Remote
           path: |
             dist/HJ_Remote.exe
-            방화벽_허용.bat
-            사용설명서.txt
+            firewall_allow.bat
+            HOWTO.txt
