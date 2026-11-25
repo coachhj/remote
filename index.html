@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<meta name="mobile-web-app-capable" content="yes">
+<title>HJ 리모컨</title>
+<style>
+  :root{--bg:#0f1115;--card:#1b1f27;--card2:#232936;--fg:#eef0f3;--mute:#8a93a3;--accent:#3fb37f;--accent2:#2d8a61;--warn:#e0a23b;--bad:#d9534f;--laser:#ff3b3b}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Noto Sans KR","Malgun Gothic",sans-serif;overscroll-behavior:none;touch-action:manipulation}
+  body{display:flex;flex-direction:column;padding:calc(env(safe-area-inset-top) + 10px) 12px calc(env(safe-area-inset-bottom) + 12px);gap:10px}
+  header{display:flex;align-items:center;justify-content:space-between}
+  .conn{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--mute)}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--bad);transition:background .2s}
+  .dot.on{background:var(--accent)} .dot.wait{background:var(--warn)}
+  .slide{font-size:22px;font-weight:700;letter-spacing:.5px}
+  .slide small{font-size:13px;color:var(--mute);font-weight:400}
+  button{font:inherit;color:var(--fg);background:var(--card);border:0;border-radius:16px;padding:0;display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;transition:transform .06s,background .1s}
+  button:active,button.pressed{transform:scale(.97);background:var(--card2)}
+  .row{display:grid;gap:10px}
+  .nav{grid-template-columns:1fr 1.7fr;height:24vh;min-height:130px}
+  .nav button{font-size:22px;font-weight:700;flex-direction:column}
+  .nav .next{background:var(--accent2)} .nav .next:active{background:var(--accent)}
+  .nav .arrow{font-size:40px;line-height:1}
+  .three{grid-template-columns:1fr 1fr 1fr;height:58px}
+  .two{grid-template-columns:1fr 1fr;height:58px}
+  .three button,.two button,.one button{font-size:16px;font-weight:600}
+  .one{grid-template-columns:1fr;height:58px}
+  .ico{font-size:20px}
+  #laser.on{background:var(--laser);color:#fff}
+  .label{font-size:12px;color:var(--mute);margin:2px 4px -4px}
+  #pad{flex:1;min-height:150px;border-radius:18px;background:repeating-linear-gradient(45deg,#171b22 0 12px,#191e26 12px 24px);border:1px dashed #334;display:flex;align-items:center;justify-content:center;color:var(--mute);font-size:14px;text-align:center;touch-action:none;position:relative}
+  #pad.active{border-color:var(--laser)}
+  #pad .sens{position:absolute;right:10px;bottom:8px;display:flex;gap:6px}
+  #pad .sens button{width:40px;height:32px;border-radius:10px;font-size:14px;background:#262c38}
+  #toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom) + 24px);transform:translateX(-50%) translateY(20px);background:#000c;color:#fff;padding:10px 16px;border-radius:12px;font-size:14px;opacity:0;transition:.2s;pointer-events:none;white-space:nowrap}
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  #setup{display:none;flex:1;flex-direction:column;justify-content:center;gap:12px;text-align:center;color:var(--mute);line-height:1.6}
+  body.nosetup #setup{display:flex} body.nosetup .ctl{display:none}
+</style>
+</head>
+<body>
+<header>
+  <div class="conn"><span class="dot" id="dot"></span><span id="connText">연결 중…</span></div>
+  <div class="slide" id="slide">– <small>/ –</small></div>
+</header>
+
+<div id="setup">
+  <div style="font-size:40px">📱</div>
+  <div>노트북에서 <b>HJ 리모컨</b> 프로그램을 실행한 뒤<br>노트북 화면의 QR 코드를 찍어 접속하세요.</div>
+</div>
+
+<div class="row nav ctl">
+  <button id="prev" data-c="prev"><span class="arrow">◀</span>이전</button>
+  <button id="next" class="next" data-c="next"><span class="arrow">▶</span>다음</button>
+</div>
+
+<div class="label ctl">음량</div>
+<div class="row three ctl">
+  <button data-c="voldown"><span class="ico">🔉</span>−</button>
+  <button data-c="mute"><span class="ico">🔇</span></button>
+  <button data-c="volup"><span class="ico">🔊</span>+</button>
+</div>
+
+<div class="label ctl">미디어 플레이어 · 포인터</div>
+<div class="row three ctl">
+  <button data-c="media"><span class="ico">⏯</span>재생/정지</button>
+  <button id="laser" data-c="laser"><span class="ico">🔴</span>레이저</button>
+  <button data-c="center"><span class="ico">⌖</span>가운데</button>
+</div>
+
+<div id="pad" class="ctl">
+  <div>여기를 문지르면 포인터가 움직여요<br><small>(누르기·클릭은 하지 않아요)</small></div>
+  <div class="sens"><button id="sDown">−</button><button id="sUp">+</button></div>
+</div>
+
+<div id="toast"></div>
+<video id="ns" playsinline muted loop style="position:fixed;width:1px;height:1px;opacity:0;pointer-events:none" src="data:video/mp4;base64,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"></video>
+
+<script>
+(() => {
+  const qs = new URLSearchParams(location.search);
+  const KEY = qs.get('k') || '';
+  const ROOM = qs.get('r');
+  const MODE = ROOM ? 'relay' : 'local';
+  const $ = id => document.getElementById(id);
+  const dot = $('dot'), connText = $('connText');
+
+  if (!KEY || (MODE === 'local' && location.protocol === 'file:')) {
+    document.body.classList.add('nosetup');
+  }
+
+  // ---------- 화면 표시
+  let toastTimer;
+  function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('show'),1300); }
+  function setConn(state, text){ dot.className='dot'+(state==='on'?' on':state==='wait'?' wait':''); connText.textContent=text; }
+  function onMessage(m){
+    if (m.t === 'state'){
+      if (m.show && m.slide){ $('slide').innerHTML = `${m.slide} <small>/ ${m.total||'–'}</small>`; }
+      else { $('slide').innerHTML = `<small>슬라이드쇼 대기</small>`; }
+      if (m.laser === true) $('laser').classList.add('on');
+      if (m.laser === false) $('laser').classList.remove('on');
+      $('pad').classList.toggle('active', !!m.laser);
+    } else if (m.t === 'toast'){ toast(m.msg); }
+    else if (m.t === 'hello'){ lastHello = Date.now(); setConn('on', MODE==='local' ? '연결됨 · 와이파이' : '연결됨 · 인터넷 중계'); }
+  }
+
+  // ---------- 연결: 같은 와이파이(WebSocket)
+  let sendRaw = () => false, lastHello = 0;
+  function startLocal(){
+    let ws, retry = 0;
+    const open = () => {
+      setConn('wait', '연결 중…');
+      ws = new WebSocket(`ws://${location.host}/ws?k=${encodeURIComponent(KEY)}`);
+      ws.onopen = () => { retry = 0; };
+      ws.onmessage = e => { try{ onMessage(JSON.parse(e.data)); }catch(_){} };
+      ws.onclose = () => { setConn('off', '끊김 · 다시 연결 중'); setTimeout(open, Math.min(4000, 500 + retry++ * 500)); };
+      ws.onerror = () => { try{ ws.close(); }catch(_){} };
+    };
+    sendRaw = obj => { if (ws && ws.readyState === 1){ ws.send(JSON.stringify(obj)); return true; } return false; };
+    open();
+  }
+
+  // ---------- 연결: 인터넷 중계(MQTT)
+  function startRelay(){
+    setConn('wait', '중계 서버 연결 중…');
+    const host = qs.get('h') || 'broker.emqx.io', port = qs.get('p') || '8084';
+    const s = document.createElement('script');
+    s.src = 'https://unpkg.com/mqtt@5/dist/mqtt.min.js';
+    s.onerror = () => setConn('off', '중계 스크립트를 못 불러옴 · 인터넷 확인');
+    s.onload = () => {
+      const base = `hjremote/${ROOM}`;
+      const client = mqtt.connect(`wss://${host}:${port}/mqtt`, { clientId: 'hjph-' + Math.random().toString(36).slice(2,10), reconnectPeriod: 1500, keepalive: 30, clean: true });
+      client.on('connect', () => {
+        setConn('wait', '노트북 찾는 중…');
+        client.subscribe(base + '/s');
+        client.publish(base + '/c', JSON.stringify({k: KEY, c: 'hello'}));
+      });
+      client.on('message', (_, payload) => { try{ onMessage(JSON.parse(payload.toString())); }catch(_){} });
+      client.on('reconnect', () => setConn('wait', '다시 연결 중…'));
+      client.on('offline', () => setConn('off', '오프라인'));
+      sendRaw = obj => { if (client.connected){ obj.k = KEY; client.publish(base + '/c', JSON.stringify(obj)); return true; } return false; };
+      // 노트북 응답이 없으면 주기적으로 다시 인사
+      setInterval(() => { if (client.connected && Date.now() - lastHello > 8000){ setConn('wait', '노트북 응답 없음 · 프로그램 실행 확인'); client.publish(base + '/c', JSON.stringify({k: KEY, c: 'hello'})); } }, 4000);
+    };
+    document.head.appendChild(s);
+  }
+
+  if (KEY) { MODE === 'relay' ? startRelay() : startLocal(); }
+
+  // 로컬 모드에서 노트북 생존 확인(상태 요청)
+  setInterval(() => sendRaw({c:'state'}), 5000);
+
+  // ---------- 버튼
+  function vib(ms){ try{ navigator.vibrate && navigator.vibrate(ms); }catch(_){} }
+  document.querySelectorAll('button[data-c]').forEach(b => {
+    b.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      keepAwake();
+      const ok = sendRaw({c: b.dataset.c});
+      vib(ok ? 25 : [60,40,60]);
+      if (!ok) toast('연결되지 않았어요');
+      b.classList.add('pressed'); setTimeout(() => b.classList.remove('pressed'), 120);
+    });
+  });
+
+  // ---------- 터치패드 (포인터 이동)
+  const pad = $('pad');
+  let sens = parseFloat(localStorage.getItem('hj_sens') || '2.2');
+  const interval = MODE === 'relay' ? 50 : 16;
+  let last = null, accX = 0, accY = 0, flushT = null;
+  function flush(){ flushT = null; if (Math.abs(accX) >= 1 || Math.abs(accY) >= 1){ const dx = Math.trunc(accX), dy = Math.trunc(accY); accX -= dx; accY -= dy; sendRaw({c:'move', dx, dy}); } }
+  pad.addEventListener('pointerdown', e => { if (e.target.closest('button')) return; pad.setPointerCapture(e.pointerId); last = {x:e.clientX, y:e.clientY, t:performance.now()}; keepAwake(); });
+  pad.addEventListener('pointermove', e => {
+    if (!last) return;
+    const now = performance.now(), dx = e.clientX - last.x, dy = e.clientY - last.y, dt = Math.max(1, now - last.t);
+    const speed = Math.hypot(dx, dy) / dt;              // px/ms
+    const gain = sens * (1 + Math.min(2.5, speed * 1.2)); // 빠르게 움직이면 더 멀리
+    accX += dx * gain; accY += dy * gain;
+    last = {x:e.clientX, y:e.clientY, t:now};
+    if (!flushT) flushT = setTimeout(flush, interval);
+  });
+  const end = () => { last = null; };
+  pad.addEventListener('pointerup', end); pad.addEventListener('pointercancel', end);
+  function setSens(v){ sens = Math.max(0.6, Math.min(6, v)); localStorage.setItem('hj_sens', sens.toFixed(1)); toast('포인터 감도 ' + sens.toFixed(1)); }
+  $('sUp').addEventListener('pointerdown', e => { e.preventDefault(); setSens(sens + 0.4); });
+  $('sDown').addEventListener('pointerdown', e => { e.preventDefault(); setSens(sens - 0.4); });
+
+  // ---------- 화면 꺼짐 방지
+  let wakeLock = null;
+  async function keepAwake(){
+    try{
+      if ('wakeLock' in navigator && window.isSecureContext){ if (!wakeLock){ wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => wakeLock = null); } return; }
+    }catch(_){}
+    const v = $('ns'); if (v.paused){ v.play().catch(()=>{}); }
+  }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible'){ wakeLock = null; } });
+
+  // 뒤로가기로 실수 종료 방지
+  history.pushState(null, '', location.href);
+  window.addEventListener('popstate', () => { history.pushState(null, '', location.href); toast('끝내려면 탭을 닫으세요'); });
+})();
+</script>
+</body>
+</html>
