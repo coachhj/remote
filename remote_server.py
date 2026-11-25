@@ -28,7 +28,7 @@ except Exception:  # 중계 기능만 꺼짐
 
 IS_WIN = sys.platform == "win32"
 PORT = 8765
-VERSION = "1.1"
+VERSION = "1.2"
 
 
 # ------------------------------------------------------------------ 경로/설정
@@ -309,21 +309,14 @@ class Worker:
             except Exception:
                 pass
         self.ppt = PowerPoint()
-        last_poll = 0
+        # 주기적으로 PowerPoint 에 묻지 않는다(영상 재생 끊김 방지).
+        # 슬라이드 번호는 이전/다음/레이저 직후와 폰이 처음 연결될 때만 확인.
         while True:
+            cmd = self.q.get()
             try:
-                cmd = self.q.get(timeout=1.0)
-            except queue.Empty:
-                cmd = None
-            if cmd is not None:
-                try:
-                    self._handle(cmd)
-                except Exception as e:
-                    print("명령 처리 오류:", cmd, e)
-            now = time.time()
-            if now - last_poll > 2.0:
-                last_poll = now
-                self._push_state()
+                self._handle(cmd)
+            except Exception as e:
+                print("명령 처리 오류:", cmd, e)
 
     def _push_state(self, force=False):
         try:
@@ -388,10 +381,11 @@ class Worker:
 
 
 WORKER = Worker()
-ALLOWED = {"next", "prev", "volup", "voldown", "mute", "media", "laser", "center", "move", "state"}
+ALLOWED = {"next", "prev", "volup", "voldown", "mute", "media", "laser", "center", "move"}
 
 
 def accept(cmd):
+    # 'state', 'ping' 같은 연결 확인 요청은 PowerPoint 를 건드리지 않도록 무시
     if isinstance(cmd, dict) and cmd.get("c") in ALLOWED:
         WORKER.submit(cmd)
 
@@ -494,11 +488,13 @@ class Relay:
         if data.get("k") != CFG["key"]:
             return
         if data.get("c") == "hello":
-            if time.time() - self.last_phone > 60:
+            first = time.time() - self.last_phone > 60
+            if first:
                 log("[인터넷 중계] 폰이 연결되었습니다")
             self.last_phone = time.time()
             cl.publish(self.t_state, json.dumps({"t": "hello", "v": VERSION}), qos=0)
-            WORKER.submit({"c": "state"})
+            if first:  # 연결 확인(4초마다)은 PowerPoint 를 건드리지 않음
+                WORKER.submit({"c": "state"})
             return
         self.last_phone = time.time()
         accept(data)
@@ -573,7 +569,11 @@ async def handle_ws(request):
         async for msg in ws:
             if msg.type == web.WSMsgType.TEXT:
                 try:
-                    accept(json.loads(msg.data))
+                    data = json.loads(msg.data)
+                    if data.get("c") in ("ping", "state"):
+                        await ws.send_json({"t": "pong"})
+                    else:
+                        accept(data)
                 except Exception:
                     pass
     finally:

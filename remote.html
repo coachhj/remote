@@ -164,7 +164,7 @@
   if (KEY) { MODE === 'relay' ? startRelay() : startLocal(); }
 
   // 로컬 모드에서 노트북 생존 확인(상태 요청)
-  setInterval(() => sendRaw({c:'state'}), 5000);
+  setInterval(() => sendRaw({c:'ping'}), 5000);
 
   // ---------- 버튼
   function vib(ms){ try{ navigator.vibrate && navigator.vibrate(ms); }catch(_){} }
