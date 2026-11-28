@@ -28,7 +28,7 @@ except Exception:  # 중계 기능만 꺼짐
 
 IS_WIN = sys.platform == "win32"
 PORT = 8765
-VERSION = "1.2"
+VERSION = "1.3"
 
 
 # ------------------------------------------------------------------ 경로/설정
@@ -153,6 +153,35 @@ if IS_WIN:
         i.mi = MOUSEINPUT(dx=int(dx), dy=int(dy), mouseData=0, dwFlags=MOUSEEVENTF_MOVE, time=0, dwExtraInfo=0)
         user32.SendInput(1, ctypes.byref(i), ctypes.sizeof(INPUT))
 
+    MOUSE_FLAGS = {("left", True): 0x0002, ("left", False): 0x0004,
+                   ("right", True): 0x0008, ("right", False): 0x0010}
+
+    def _mouse(flags, data=0):
+        i = INPUT(type=0)
+        i.mi = MOUSEINPUT(dx=0, dy=0, mouseData=data & 0xFFFFFFFF, dwFlags=flags, time=0, dwExtraInfo=0)
+        return i
+
+    def mouse_button(b, down):
+        i = _mouse(MOUSE_FLAGS[(b, down)])
+        user32.SendInput(1, ctypes.byref(i), ctypes.sizeof(INPUT))
+
+    def mouse_click(b, n=1):
+        seq = []
+        for _ in range(n):
+            seq += [_mouse(MOUSE_FLAGS[(b, True)]), _mouse(MOUSE_FLAGS[(b, False)])]
+        arr = (INPUT * len(seq))(*seq)
+        user32.SendInput(len(seq), arr, ctypes.sizeof(INPUT))
+
+    def mouse_wheel(v, h):
+        seq = []
+        if v:
+            seq.append(_mouse(0x0800, int(v)))   # 세로 휠 (+ 위로)
+        if h:
+            seq.append(_mouse(0x1000, int(h)))   # 가로 휠 (+ 오른쪽으로)
+        if seq:
+            arr = (INPUT * len(seq))(*seq)
+            user32.SendInput(len(seq), arr, ctypes.sizeof(INPUT))
+
     def center_cursor_on_slideshow():
         hwnd = user32.FindWindowW("screenClass", None)  # PowerPoint 슬라이드쇼 창
         if not hwnd:
@@ -171,6 +200,15 @@ else:  # 개발/테스트용 (윈도우가 아닐 때는 동작만 기록)
     def center_cursor_on_slideshow():
         print("[테스트] 커서 가운데로")
         return True
+
+    def mouse_button(b, down):
+        print("[테스트] 마우스", b, "누름" if down else "뗌")
+
+    def mouse_click(b, n=1):
+        print("[테스트] 클릭", b, n)
+
+    def mouse_wheel(v, h):
+        print("[테스트] 스크롤 세로", v, "가로", h)
 
 VK_LEFT, VK_RIGHT = 0x25, 0x27
 VK_VOLUME_MUTE, VK_VOLUME_DOWN, VK_VOLUME_UP = 0xAD, 0xAE, 0xAF
@@ -287,6 +325,8 @@ class Worker:
         self.listeners = []  # 상태 변경을 받을 콜백(dict) 목록
         self.lock = threading.Lock()
         self.last_state = {}
+        self.held = False
+        self.last_cmd = time.time()
         threading.Thread(target=self._run, daemon=True).start()
 
     def submit(self, cmd):
@@ -312,7 +352,15 @@ class Worker:
         # 주기적으로 PowerPoint 에 묻지 않는다(영상 재생 끊김 방지).
         # 슬라이드 번호는 이전/다음/레이저 직후와 폰이 처음 연결될 때만 확인.
         while True:
-            cmd = self.q.get()
+            try:
+                cmd = self.q.get(timeout=1.0)
+            except queue.Empty:
+                # 끌기 중 연결이 끊기는 등으로 버튼이 눌린 채 남지 않도록 자동으로 뗌
+                if self.held and time.time() - self.last_cmd > 15:
+                    mouse_button("left", False)
+                    self.held = False
+                continue
+            self.last_cmd = time.time()
             try:
                 self._handle(cmd)
             except Exception as e:
@@ -378,10 +426,28 @@ class Worker:
             self.broadcast({"t": "toast", "msg": "포인터를 화면 가운데로" if ok else "슬라이드쇼 화면을 못 찾았어요"})
         elif c == "state":
             self._push_state(force=True)
+        elif c == "click":
+            b = "right" if cmd.get("b") == "right" else "left"
+            n = 2 if cmd.get("n") == 2 and b == "left" else 1
+            mouse_click(b, n)
+        elif c == "down":
+            if not self.held:
+                mouse_button("left", True)
+                self.held = True
+        elif c == "up":
+            if self.held:
+                mouse_button("left", False)
+                self.held = False
+        elif c == "scroll":
+            # 폰처럼(자연스러운) 스크롤: 손가락을 올리면 아래 내용이 보임
+            fx, fy = float(cmd.get("dx", 0)), float(cmd.get("dy", 0))
+            clamp = lambda v: max(-1200, min(1200, int(v)))
+            mouse_wheel(clamp(fy), clamp(-fx))
 
 
 WORKER = Worker()
-ALLOWED = {"next", "prev", "volup", "voldown", "mute", "media", "laser", "center", "move"}
+ALLOWED = {"next", "prev", "volup", "voldown", "mute", "media", "laser", "center", "move",
+           "click", "down", "up", "scroll"}
 
 
 def accept(cmd):
@@ -578,6 +644,7 @@ async def handle_ws(request):
                     pass
     finally:
         ws_clients.discard(ws)
+        WORKER.submit({"c": "up"})  # 끌기 중 끊기면 버튼 놓기
         log(f"[같은 와이파이] 폰 연결 끊김 ({request.remote})")
         with WORKER.lock:
             if send in WORKER.listeners:
