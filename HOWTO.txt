@@ -97,3 +97,20 @@ HJ 프레젠테이션 리모컨 사용설명서
  - 접속 주소에 비밀 열쇠(k=...)가 들어 있어, QR 을 찍은 폰만 조작할 수 있습니다.
  - 폰에서 보낼 수 있는 명령은 위 버튼 기능뿐입니다(파일 접근, 임의 입력 불가).
  - 열쇠를 바꾸고 싶으면 hj_remote_config.json 을 지우고 다시 실행하세요.
+
+7. 다른 컴퓨터에서 쓰기 (Python 실행 방식)
+--------------------------------------------
+ 준비물: 윈도우 + PowerPoint, 인터넷(처음 설치 때만)
+
+ 1) Python 설치: python.org → Python 3.12 설치. 첫 화면에서 "Add python.exe to PATH" 체크.
+ 2) 파일 받기: https://github.com/coachhj/remote → 초록색 [Code] → Download ZIP
+    → 받은 zip 오른쪽 클릭 → 속성 → [차단 해제] 체크 → 압축 풀기
+ 3) 부품 설치: 푼 폴더 주소창에 cmd 입력 → 아래 한 줄 실행
+      python -m pip install -r requirements.txt
+ 4) (선택) 기존 노트북의 hj_remote_config.json 을 이 폴더로 복사
+    → 폰 홈 화면 아이콘을 그대로 사용. 단, 두 컴퓨터를 동시에 켜지 말 것.
+    복사하지 않으면 새 열쇠가 만들어지므로 QR 을 새로 찍으면 됨.
+ 5) firewall_allow.bat 더블클릭 → [예] (같은 와이파이 방식용, 처음 한 번)
+    막히거나 관리자 권한이 없으면 건너뛰고 인터넷 중계(오른쪽 QR)를 사용.
+ 6) 실행: remote_server.py 더블클릭 → QR 을 폰으로 찍기
+    메모장으로 열리면: 오른쪽 클릭 → 연결 프로그램 → Python → 항상 이 앱 사용
