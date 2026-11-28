@@ -183,7 +183,7 @@
 
   // ---------- 터치패드 (이동 · 클릭 · 끌기 · 스크롤)
   const pad = $('pad');
-  let sens = parseFloat(localStorage.getItem('hj_sens') || '2.2');
+  let sens = parseFloat(localStorage.getItem('hj_sens2') || '1.0');
   const interval = MODE === 'relay' ? 50 : 16;
   const TAP_MS = 250, TAP_GAP = 300, TAP_SLOP = 10, LONG_MS = 1000, SCROLL_GAIN = 4;
   const pts = new Map();
@@ -256,7 +256,7 @@
     mode = 'idle';
   }
   pad.addEventListener('pointerup', lift); pad.addEventListener('pointercancel', lift);
-  function setSens(v){ sens = Math.max(0.6, Math.min(6, v)); localStorage.setItem('hj_sens', sens.toFixed(1)); toast('포인터 감도 ' + sens.toFixed(1)); }
+  function setSens(v){ sens = Math.max(0.6, Math.min(6, v)); localStorage.setItem('hj_sens2', sens.toFixed(1)); toast('포인터 감도 ' + sens.toFixed(1)); }
   $('sUp').addEventListener('pointerdown', e => { e.preventDefault(); setSens(sens + 0.4); });
   $('sDown').addEventListener('pointerdown', e => { e.preventDefault(); setSens(sens - 0.4); });
 
